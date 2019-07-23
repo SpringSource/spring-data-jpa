@@ -33,6 +33,7 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnitRunner;
+import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.query.JpaQueryExecution.ModifyingExecution;
@@ -48,6 +49,7 @@ import org.springframework.data.repository.query.Parameters;
  * @author Mark Paluch
  * @author Nicolas Cirigliano
  * @author Jens Schauder
+ * @author Chao Jiang
  */
 @RunWith(MockitoJUnitRunner.Silent.class)
 public class JpaQueryExecutionUnitTests {
@@ -56,6 +58,7 @@ public class JpaQueryExecutionUnitTests {
 	@Mock AbstractStringBasedJpaQuery jpaQuery;
 	@Mock Query query;
 	@Mock JpaQueryMethod method;
+	@Mock DeclaredQuery declaredQuery;
 
 	@Mock TypedQuery<Long> countQuery;
 
@@ -148,6 +151,9 @@ public class JpaQueryExecutionUnitTests {
 		when(jpaQuery.createCountQuery(Mockito.any(Object[].class))).thenReturn(countQuery);
 		when(jpaQuery.createQuery(Mockito.any(Object[].class))).thenReturn(query);
 		when(countQuery.getResultList()).thenReturn(Arrays.asList(20L));
+		
+		when(jpaQuery.getQuery()).thenReturn(declaredQuery);
+		when(declaredQuery.getQueryString()).thenReturn("select count(1) from User u");
 
 		PagedExecution execution = new PagedExecution(parameters);
 		execution.doExecute(jpaQuery, new Object[] { PageRequest.of(2, 10) });
@@ -168,6 +174,32 @@ public class JpaQueryExecutionUnitTests {
 
 		verify(countQuery, times(0)).getResultList();
 		verify(jpaQuery, times(0)).createCountQuery((Object[]) any());
+	}
+	
+	@Test // DATAJPA-1544
+	public void pagedExecutionShouldUseTotalSizeInCount() throws Exception {
+		
+		Parameters<?, ?> parameters = new DefaultParameters(getClass().getMethod("sampleMethod", Pageable.class));
+		when(jpaQuery.createCountQuery(Mockito.any(Object[].class))).thenReturn(countQuery);
+		when(jpaQuery.createQuery(Mockito.any(Object[].class))).thenReturn(query);
+		when(countQuery.getResultList()).thenReturn(Arrays.asList(20L));
+		when(query.getResultList()).thenReturn(Arrays.asList(20L));
+		when(method.getCountQuery()).thenReturn("select count(1) from User u");
+
+		when(jpaQuery.getQuery()).thenReturn(declaredQuery);
+		when(declaredQuery.getQueryString()).thenReturn("select count(1) from User u");
+		
+		PagedExecution execution = new PagedExecution(parameters);
+		Page<Object> page = (Page<Object>) execution.doExecute(jpaQuery, new Object[] { PageRequest.of(0, 1) });
+
+		assertEquals(page.getTotalElements(), 20);
+
+		when(declaredQuery.getQueryString()).thenReturn("select count(1) from User u group by u.id");
+				
+		page = (Page<Object>) execution.doExecute(jpaQuery, new Object[] { PageRequest.of(0, 1) });
+		
+		assertEquals(page.getTotalElements(), 1);
+
 	}
 
 	@Test // DATAJPA-912
@@ -206,6 +238,9 @@ public class JpaQueryExecutionUnitTests {
 		when(jpaQuery.createCountQuery(Mockito.any(Object[].class))).thenReturn(query);
 		when(countQuery.getResultList()).thenReturn(Arrays.asList(20L));
 
+		when(jpaQuery.getQuery()).thenReturn(declaredQuery);
+		when(declaredQuery.getQueryString()).thenReturn("select count(1) from User u");
+		
 		PagedExecution execution = new PagedExecution(parameters);
 		execution.doExecute(jpaQuery, new Object[] { PageRequest.of(4, 4) });
 
@@ -222,6 +257,9 @@ public class JpaQueryExecutionUnitTests {
 		when(jpaQuery.createCountQuery(Mockito.any(Object[].class))).thenReturn(query);
 		when(countQuery.getResultList()).thenReturn(Arrays.asList(20L));
 
+		when(jpaQuery.getQuery()).thenReturn(declaredQuery);
+		when(declaredQuery.getQueryString()).thenReturn("select count(1) from User u");
+		
 		PagedExecution execution = new PagedExecution(parameters);
 		execution.doExecute(jpaQuery, new Object[] { PageRequest.of(4, 4) });
 
