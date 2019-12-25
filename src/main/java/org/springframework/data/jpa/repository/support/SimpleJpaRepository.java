@@ -18,6 +18,7 @@ package org.springframework.data.jpa.repository.support;
 import static org.springframework.data.jpa.repository.query.QueryUtils.*;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -52,6 +53,7 @@ import org.springframework.data.jpa.repository.query.EscapeCharacter;
 import org.springframework.data.jpa.repository.query.QueryUtils;
 import org.springframework.data.jpa.repository.support.QueryHints.NoHints;
 import org.springframework.data.repository.support.PageableExecutionUtils;
+import org.springframework.data.util.ProxyUtils;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
@@ -69,6 +71,7 @@ import org.springframework.util.Assert;
  * @author Stefan Fussenegger
  * @author Jens Schauder
  * @author David Madden
+ * @author Moritz Becker
  * @param <T> the type of the entity to handle
  * @param <ID> the type of the entity's identifier
  */
@@ -84,6 +87,19 @@ public class SimpleJpaRepository<T, ID> implements JpaRepositoryImplementation<T
 
 	private @Nullable CrudMethodMetadata metadata;
 	private EscapeCharacter escapeCharacter = EscapeCharacter.DEFAULT;
+
+	private static <T> Collection<T> toCollection(Iterable<T> ts) {
+
+		if (ts instanceof Collection) {
+			return (Collection<T>) ts;
+		}
+
+		List<T> tCollection = new ArrayList<T>();
+		for (T t : ts) {
+			tCollection.add(t);
+		}
+		return tCollection;
+	}
 
 	/**
 	 * Creates a new {@link SimpleJpaRepository} to manage objects of the given {@link JpaEntityInformation}.
@@ -164,8 +180,9 @@ public class SimpleJpaRepository<T, ID> implements JpaRepositoryImplementation<T
 	 * (non-Javadoc)
 	 * @see org.springframework.data.repository.CrudRepository#delete(java.lang.Object)
 	 */
-	@Transactional
 	@Override
+	@Transactional
+	@SuppressWarnings("unchecked")
 	public void delete(T entity) {
 
 		Assert.notNull(entity, "Entity must not be null!");
@@ -174,11 +191,15 @@ public class SimpleJpaRepository<T, ID> implements JpaRepositoryImplementation<T
 			return;
 		}
 
-		T existing = em.find(entityInformation.getJavaType(), entityInformation.getId(entity));
+		Class<?> type = ProxyUtils.getUserClass(entity);
+
+		T existing = (T) em.find(type, entityInformation.getId(entity));
+
 		// if the entity to be deleted doesn't exist, delete is a NOOP
 		if (existing == null) {
 			return;
 		}
+
 		em.remove(em.contains(entity) ? entity : em.merge(entity));
 	}
 
@@ -358,10 +379,12 @@ public class SimpleJpaRepository<T, ID> implements JpaRepositoryImplementation<T
 			return results;
 		}
 
+		Collection<ID> idCollection = toCollection(ids);
+
 		ByIdsSpecification<T> specification = new ByIdsSpecification<T>(entityInformation);
 		TypedQuery<T> query = getQuery(specification, Sort.unsorted());
 
-		return query.setParameter(specification.parameter, ids).getResultList();
+		return query.setParameter(specification.parameter, idCollection).getResultList();
 	}
 
 	/*
@@ -439,8 +462,9 @@ public class SimpleJpaRepository<T, ID> implements JpaRepositoryImplementation<T
 	public <S extends T> Optional<S> findOne(Example<S> example) {
 
 		try {
-			return Optional.of(
-					getQuery(new ExampleSpecification<S>(example, escapeCharacter), example.getProbeType(), Sort.unsorted()).getSingleResult());
+			return Optional
+					.of(getQuery(new ExampleSpecification<S>(example, escapeCharacter), example.getProbeType(), Sort.unsorted())
+							.getSingleResult());
 		} catch (NoResultException e) {
 			return Optional.empty();
 		}
@@ -452,7 +476,8 @@ public class SimpleJpaRepository<T, ID> implements JpaRepositoryImplementation<T
 	 */
 	@Override
 	public <S extends T> long count(Example<S> example) {
-		return executeCountQuery(getCountQuery(new ExampleSpecification<S>(example, escapeCharacter), example.getProbeType()));
+		return executeCountQuery(
+				getCountQuery(new ExampleSpecification<S>(example, escapeCharacter), example.getProbeType()));
 	}
 
 	/*
@@ -461,8 +486,8 @@ public class SimpleJpaRepository<T, ID> implements JpaRepositoryImplementation<T
 	 */
 	@Override
 	public <S extends T> boolean exists(Example<S> example) {
-		return !getQuery(new ExampleSpecification<S>(example, escapeCharacter), example.getProbeType(), Sort.unsorted()).getResultList()
-				.isEmpty();
+		return !getQuery(new ExampleSpecification<S>(example, escapeCharacter), example.getProbeType(), Sort.unsorted())
+				.getResultList().isEmpty();
 	}
 
 	/*
@@ -471,7 +496,8 @@ public class SimpleJpaRepository<T, ID> implements JpaRepositoryImplementation<T
 	 */
 	@Override
 	public <S extends T> List<S> findAll(Example<S> example) {
-		return getQuery(new ExampleSpecification<S>(example, escapeCharacter), example.getProbeType(), Sort.unsorted()).getResultList();
+		return getQuery(new ExampleSpecification<S>(example, escapeCharacter), example.getProbeType(), Sort.unsorted())
+				.getResultList();
 	}
 
 	/*
@@ -480,7 +506,8 @@ public class SimpleJpaRepository<T, ID> implements JpaRepositoryImplementation<T
 	 */
 	@Override
 	public <S extends T> List<S> findAll(Example<S> example, Sort sort) {
-		return getQuery(new ExampleSpecification<S>(example, escapeCharacter), example.getProbeType(), sort).getResultList();
+		return getQuery(new ExampleSpecification<S>(example, escapeCharacter), example.getProbeType(), sort)
+				.getResultList();
 	}
 
 	/*
@@ -801,7 +828,7 @@ public class SimpleJpaRepository<T, ID> implements JpaRepositoryImplementation<T
 
 		private final JpaEntityInformation<T, ?> entityInformation;
 
-		@Nullable ParameterExpression<Iterable> parameter;
+		@Nullable ParameterExpression<Collection<?>> parameter;
 
 		ByIdsSpecification(JpaEntityInformation<T, ?> entityInformation) {
 			this.entityInformation = entityInformation;
@@ -815,7 +842,7 @@ public class SimpleJpaRepository<T, ID> implements JpaRepositoryImplementation<T
 		public Predicate toPredicate(Root<T> root, CriteriaQuery<?> query, CriteriaBuilder cb) {
 
 			Path<?> path = root.get(entityInformation.getIdAttribute());
-			parameter = cb.parameter(Iterable.class);
+			parameter = (ParameterExpression<Collection<?>>) (ParameterExpression) cb.parameter(Collection.class);
 			return path.in(parameter);
 		}
 	}

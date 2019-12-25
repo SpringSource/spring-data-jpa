@@ -15,9 +15,8 @@
  */
 package org.springframework.data.jpa.repository.query;
 
-import static org.hamcrest.CoreMatchers.*;
-import static org.junit.Assert.*;
-import static org.mockito.ArgumentMatchers.any;
+import static org.assertj.core.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 import java.util.Arrays;
@@ -38,8 +37,6 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.query.JpaQueryExecution.ModifyingExecution;
 import org.springframework.data.jpa.repository.query.JpaQueryExecution.PagedExecution;
-import org.springframework.data.repository.query.DefaultParameters;
-import org.springframework.data.repository.query.Parameters;
 
 /**
  * Unit test for {@link JpaQueryExecution}.
@@ -49,6 +46,7 @@ import org.springframework.data.repository.query.Parameters;
  * @author Mark Paluch
  * @author Nicolas Cirigliano
  * @author Jens Schauder
+ * @author Chao Jiang
  */
 @RunWith(MockitoJUnitRunner.Silent.class)
 public class JpaQueryExecutionUnitTests {
@@ -57,21 +55,24 @@ public class JpaQueryExecutionUnitTests {
 	@Mock AbstractStringBasedJpaQuery jpaQuery;
 	@Mock Query query;
 	@Mock JpaQueryMethod method;
+	@Mock JpaParametersParameterAccessor accessor;
 
 	@Mock TypedQuery<Long> countQuery;
 
+	public static void sampleMethod(Pageable pageable) {}
+
 	@Before
-	public void setUp(){
+	public void setUp() {
 
 		when(query.executeUpdate()).thenReturn(0);
-		when(jpaQuery.createQuery(Mockito.any(Object[].class))).thenReturn(query);
+		when(jpaQuery.createQuery(Mockito.any(JpaParametersParameterAccessor.class))).thenReturn(query);
 		when(jpaQuery.getQueryMethod()).thenReturn(method);
 	}
 
 	@Test(expected = IllegalArgumentException.class)
 	public void rejectsNullQuery() {
 
-		new StubQueryExecution().execute(null, new Object[] {});
+		new StubQueryExecution().execute(null, accessor);
 	}
 
 	@Test(expected = IllegalArgumentException.class)
@@ -86,11 +87,11 @@ public class JpaQueryExecutionUnitTests {
 		assertThat(new JpaQueryExecution() {
 
 			@Override
-			protected Object doExecute(AbstractJpaQuery query, Object[] values) {
+			protected Object doExecute(AbstractJpaQuery query, JpaParametersParameterAccessor accessor) {
 
 				return null;
 			}
-		}.execute(jpaQuery, new Object[] {}), is(nullValue()));
+		}.execute(jpaQuery, accessor)).isNull();
 	}
 
 	@Test // DATAJPA-806
@@ -101,7 +102,7 @@ public class JpaQueryExecutionUnitTests {
 		when(method.getFlushAutomatically()).thenReturn(true);
 
 		ModifyingExecution execution = new ModifyingExecution(method, em);
-		execution.execute(jpaQuery, new Object[] {});
+		execution.execute(jpaQuery, accessor);
 
 		verify(em, times(1)).flush();
 		verify(em, times(0)).clear();
@@ -115,7 +116,7 @@ public class JpaQueryExecutionUnitTests {
 		when(method.getClearAutomatically()).thenReturn(true);
 
 		ModifyingExecution execution = new ModifyingExecution(method, em);
-		execution.execute(jpaQuery, new Object[] {});
+		execution.execute(jpaQuery, accessor);
 
 		verify(em, times(0)).flush();
 		verify(em, times(1)).clear();
@@ -143,88 +144,94 @@ public class JpaQueryExecutionUnitTests {
 	@Test // DATAJPA-124, DATAJPA-912
 	public void pagedExecutionRetrievesObjectsForPageableOutOfRange() throws Exception {
 
-		Parameters<?, ?> parameters = new DefaultParameters(getClass().getMethod("sampleMethod", Pageable.class));
-		when(jpaQuery.createCountQuery(Mockito.any(Object[].class))).thenReturn(countQuery);
-		when(jpaQuery.createQuery(Mockito.any(Object[].class))).thenReturn(query);
-		when(countQuery.getResultList()).thenReturn(Arrays.asList(20L));
+		JpaParameters parameters = new JpaParameters(getClass().getMethod("sampleMethod", Pageable.class));
+		when(jpaQuery.createCountQuery(Mockito.any())).thenReturn(countQuery);
+		when(jpaQuery.createQuery(Mockito.any())).thenReturn(query);
+		when(countQuery.getSingleResult()).thenReturn(20L);
 
-		PagedExecution execution = new PagedExecution(parameters);
-		execution.doExecute(jpaQuery, new Object[] { PageRequest.of(2, 10) });
+		PagedExecution execution = new PagedExecution();
+		execution.doExecute(jpaQuery,
+				new JpaParametersParameterAccessor(parameters, new Object[] { PageRequest.of(2, 10) }));
 
 		verify(query).getResultList();
-		verify(countQuery).getResultList();
+		verify(countQuery).getSingleResult();
 	}
 
 	@Test // DATAJPA-477, DATAJPA-912
 	public void pagedExecutionShouldNotGenerateCountQueryIfQueryReportedNoResults() throws Exception {
 
-		Parameters<?, ?> parameters = new DefaultParameters(getClass().getMethod("sampleMethod", Pageable.class));
-		when(jpaQuery.createQuery(Mockito.any(Object[].class))).thenReturn(query);
+		JpaParameters parameters = new JpaParameters(getClass().getMethod("sampleMethod", Pageable.class));
+		when(jpaQuery.createQuery(Mockito.any())).thenReturn(query);
 		when(query.getResultList()).thenReturn(Arrays.asList(0L));
 
-		PagedExecution execution = new PagedExecution(parameters);
-		execution.doExecute(jpaQuery, new Object[] { PageRequest.of(0, 10) });
+		PagedExecution execution = new PagedExecution();
+		execution.doExecute(jpaQuery,
+				new JpaParametersParameterAccessor(parameters, new Object[] { PageRequest.of(0, 10) }));
 
 		verify(countQuery, times(0)).getResultList();
-		verify(jpaQuery, times(0)).createCountQuery((Object[]) any());
+		verify(jpaQuery, times(0)).createCountQuery(any());
 	}
 
 	@Test // DATAJPA-912
 	public void pagedExecutionShouldUseCountFromResultIfOffsetIsZeroAndResultsWithinPageSize() throws Exception {
 
-		Parameters<?, ?> parameters = new DefaultParameters(getClass().getMethod("sampleMethod", Pageable.class));
-		when(jpaQuery.createQuery(Mockito.any(Object[].class))).thenReturn(query);
+		JpaParameters parameters = new JpaParameters(getClass().getMethod("sampleMethod", Pageable.class));
+		when(jpaQuery.createQuery(Mockito.any())).thenReturn(query);
 		when(query.getResultList()).thenReturn(Arrays.asList(new Object(), new Object(), new Object(), new Object()));
 
-		PagedExecution execution = new PagedExecution(parameters);
-		execution.doExecute(jpaQuery, new Object[] { PageRequest.of(0, 10) });
+		PagedExecution execution = new PagedExecution();
+		execution.doExecute(jpaQuery,
+				new JpaParametersParameterAccessor(parameters, new Object[] { PageRequest.of(0, 10) }));
 
-		verify(jpaQuery, times(0)).createCountQuery((Object[]) any());
+		verify(jpaQuery, times(0)).createCountQuery(any());
 	}
 
 	@Test // DATAJPA-912
 	public void pagedExecutionShouldUseCountFromResultWithOffsetAndResultsWithinPageSize() throws Exception {
 
-		Parameters<?, ?> parameters = new DefaultParameters(getClass().getMethod("sampleMethod", Pageable.class));
-		when(jpaQuery.createQuery(Mockito.any(Object[].class))).thenReturn(query);
+		JpaParameters parameters = new JpaParameters(getClass().getMethod("sampleMethod", Pageable.class));
+		when(jpaQuery.createQuery(Mockito.any())).thenReturn(query);
 		when(query.getResultList()).thenReturn(Arrays.asList(new Object(), new Object(), new Object(), new Object()));
 
-		PagedExecution execution = new PagedExecution(parameters);
-		execution.doExecute(jpaQuery, new Object[] { PageRequest.of(5, 10) });
+		PagedExecution execution = new PagedExecution();
+		execution.doExecute(jpaQuery,
+				new JpaParametersParameterAccessor(parameters, new Object[] { PageRequest.of(5, 10) }));
 
-		verify(jpaQuery, times(0)).createCountQuery((Object[]) any());
+		verify(jpaQuery, times(0)).createCountQuery(any());
 	}
 
 	@Test // DATAJPA-912
 	public void pagedExecutionShouldUseRequestCountFromResultWithOffsetAndResultsHitLowerPageSizeBounds()
 			throws Exception {
 
-		Parameters<?, ?> parameters = new DefaultParameters(getClass().getMethod("sampleMethod", Pageable.class));
-		when(jpaQuery.createQuery(Mockito.any(Object[].class))).thenReturn(query);
+		JpaParameters parameters = new JpaParameters(getClass().getMethod("sampleMethod", Pageable.class));
+		when(jpaQuery.createQuery(Mockito.any())).thenReturn(query);
 		when(query.getResultList()).thenReturn(Collections.emptyList());
-		when(jpaQuery.createCountQuery(Mockito.any(Object[].class))).thenReturn(query);
-		when(countQuery.getResultList()).thenReturn(Arrays.asList(20L));
+		when(jpaQuery.createCountQuery(Mockito.any())).thenReturn(countQuery);
+		when(countQuery.getSingleResult()).thenReturn(20L);
 
-		PagedExecution execution = new PagedExecution(parameters);
-		execution.doExecute(jpaQuery, new Object[] { PageRequest.of(4, 4) });
+		PagedExecution execution = new PagedExecution();
+		execution.doExecute(jpaQuery,
+				new JpaParametersParameterAccessor(parameters, new Object[] { PageRequest.of(4, 4) }));
 
-		verify(jpaQuery).createCountQuery((Object[]) any());
+		verify(jpaQuery).createCountQuery(any());
 	}
 
 	@Test // DATAJPA-912
 	public void pagedExecutionShouldUseRequestCountFromResultWithOffsetAndResultsHitUpperPageSizeBounds()
 			throws Exception {
 
-		Parameters<?, ?> parameters = new DefaultParameters(getClass().getMethod("sampleMethod", Pageable.class));
-		when(jpaQuery.createQuery(Mockito.any(Object[].class))).thenReturn(query);
+		JpaParameters parameters = new JpaParameters(getClass().getMethod("sampleMethod", Pageable.class));
+		when(jpaQuery.createQuery(Mockito.any())).thenReturn(query);
 		when(query.getResultList()).thenReturn(Arrays.asList(new Object(), new Object(), new Object(), new Object()));
-		when(jpaQuery.createCountQuery(Mockito.any(Object[].class))).thenReturn(query);
-		when(countQuery.getResultList()).thenReturn(Arrays.asList(20L));
+		when(jpaQuery.createCountQuery(Mockito.any())).thenReturn(countQuery);
+		when(countQuery.getSingleResult()).thenReturn(20L);
 
-		PagedExecution execution = new PagedExecution(parameters);
-		execution.doExecute(jpaQuery, new Object[] { PageRequest.of(4, 4) });
+		PagedExecution execution = new PagedExecution();
+		execution.doExecute(jpaQuery,
+				new JpaParametersParameterAccessor(parameters, new Object[] { PageRequest.of(4, 4) }));
 
-		verify(jpaQuery).createCountQuery((Object[]) any());
+		verify(jpaQuery).createCountQuery(any());
 	}
 
 	@Test // DATAJPA-951
@@ -232,25 +239,24 @@ public class JpaQueryExecutionUnitTests {
 
 		doReturn(method).when(jpaQuery).getQueryMethod();
 		doReturn(Optional.class).when(method).getReturnType();
+		JpaParametersParameterAccessor accessor = mock(JpaParametersParameterAccessor.class);
 
 		StubQueryExecution execution = new StubQueryExecution() {
 			@Override
-			protected Object doExecute(AbstractJpaQuery query, Object[] values) {
+			protected Object doExecute(AbstractJpaQuery query, JpaParametersParameterAccessor accessor) {
 				return "result";
 			}
 		};
 
-		Object result = execution.execute(jpaQuery, new Object[0]);
+		Object result = execution.execute(jpaQuery, accessor);
 
-		assertThat(result, is(instanceOf(String.class)));
+		assertThat(result).isInstanceOf(String.class);
 	}
-
-	public static void sampleMethod(Pageable pageable) {}
 
 	static class StubQueryExecution extends JpaQueryExecution {
 
 		@Override
-		protected Object doExecute(AbstractJpaQuery query, Object[] values) {
+		protected Object doExecute(AbstractJpaQuery query, JpaParametersParameterAccessor accessor) {
 			return null;
 		}
 	}

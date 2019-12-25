@@ -125,19 +125,17 @@ public class JpaMetamodelEntityInformation<T, ID> extends JpaEntityInformationSu
 
 		Class<?> superType = type.getJavaType().getSuperclass();
 
-		try {
-
-			ManagedType<?> managedSuperType = metamodel.managedType(superType);
-
-			if (!(managedSuperType instanceof IdentifiableType)) {
-				return Optional.empty();
-			}
-
-			return findVersionAttribute((IdentifiableType<T>) managedSuperType, metamodel);
-
-		} catch (IllegalArgumentException o_O) {
+		if (!JpaMetamodel.of(metamodel).isJpaManaged(superType)) {
 			return Optional.empty();
 		}
+
+		ManagedType<?> managedSuperType = metamodel.managedType(superType);
+
+		if (!(managedSuperType instanceof IdentifiableType)) {
+			return Optional.empty();
+		}
+
+		return findVersionAttribute((IdentifiableType<T>) managedSuperType, metamodel);
 	}
 
 	/*
@@ -419,13 +417,17 @@ public class JpaMetamodelEntityInformation<T, ID> extends JpaEntityInformationSu
 				return false;
 			}
 
-			try {
-				ManagedType<?> managedType = this.metamodel.managedType(ProxyUtils.getUserClass(value));
-				return managedType != null && managedType.getPersistenceType() == PersistenceType.ENTITY;
-			} catch (IllegalArgumentException iae) {
-				// no mapped type
+			Class<?> userClass = ProxyUtils.getUserClass(value);
+
+			if (!this.jpaMetamodel.isJpaManaged(userClass)) {
 				return false;
 			}
+
+			ManagedType<?> managedType = this.metamodel.managedType(userClass);
+
+			Assert.state(managedType != null, "ManagedType must not be null. We checked that it exists before.");
+
+			return managedType.getPersistenceType() == PersistenceType.ENTITY;
 		}
 	}
 }

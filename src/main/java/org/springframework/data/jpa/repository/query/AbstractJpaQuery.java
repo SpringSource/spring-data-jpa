@@ -20,7 +20,6 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -43,7 +42,6 @@ import org.springframework.data.jpa.repository.query.JpaQueryExecution.SingleEnt
 import org.springframework.data.jpa.repository.query.JpaQueryExecution.SlicedExecution;
 import org.springframework.data.jpa.repository.query.JpaQueryExecution.StreamExecution;
 import org.springframework.data.jpa.util.JpaMetamodel;
-import org.springframework.data.repository.query.ParametersParameterAccessor;
 import org.springframework.data.repository.query.RepositoryQuery;
 import org.springframework.data.repository.query.ResultProcessor;
 import org.springframework.data.repository.query.ReturnedType;
@@ -68,8 +66,9 @@ public abstract class AbstractJpaQuery implements RepositoryQuery {
 	private final EntityManager em;
 	private final JpaMetamodel metamodel;
 	private final PersistenceProvider provider;
+	private final Lazy<JpaQueryExecution> execution;
 
-	Lazy<ParameterBinder> parameterBinder = new Lazy<>(this::createBinder);
+	final Lazy<ParameterBinder> parameterBinder = new Lazy<>(this::createBinder);
 
 	/**
 	 * Creates a new {@link AbstractJpaQuery} from the given {@link JpaQueryMethod}.
@@ -86,6 +85,24 @@ public abstract class AbstractJpaQuery implements RepositoryQuery {
 		this.em = em;
 		this.metamodel = JpaMetamodel.of(em.getMetamodel());
 		this.provider = PersistenceProvider.fromEntityManager(em);
+		this.execution = Lazy.of(() -> {
+
+			if (method.isStreamQuery()) {
+				return new StreamExecution();
+			} else if (method.isProcedureQuery()) {
+				return new ProcedureExecution();
+			} else if (method.isCollectionQuery()) {
+				return new CollectionExecution();
+			} else if (method.isSliceQuery()) {
+				return new SlicedExecution();
+			} else if (method.isPageQuery()) {
+				return new PagedExecution();
+			} else if (method.isModifyingQuery()) {
+				return null;
+			} else {
+				return new SingleEntityExecution();
+			}
+		});
 	}
 
 	/*
@@ -133,27 +150,22 @@ public abstract class AbstractJpaQuery implements RepositoryQuery {
 	@Nullable
 	private Object doExecute(JpaQueryExecution execution, Object[] values) {
 
-		Object result = execution.execute(this, values);
+		JpaParametersParameterAccessor accessor = new JpaParametersParameterAccessor(method.getParameters(), values);
+		Object result = execution.execute(this, accessor);
 
-		ParametersParameterAccessor accessor = new ParametersParameterAccessor(method.getParameters(), values);
 		ResultProcessor withDynamicProjection = method.getResultProcessor().withDynamicProjection(accessor);
-
 		return withDynamicProjection.processResult(result, new TupleConverter(withDynamicProjection.getReturnedType()));
 	}
 
 	protected JpaQueryExecution getExecution() {
 
-		if (method.isStreamQuery()) {
-			return new StreamExecution();
-		} else if (method.isProcedureQuery()) {
-			return new ProcedureExecution();
-		} else if (method.isCollectionQuery()) {
-			return new CollectionExecution();
-		} else if (method.isSliceQuery()) {
-			return new SlicedExecution(method.getParameters());
-		} else if (method.isPageQuery()) {
-			return new PagedExecution(method.getParameters());
-		} else if (method.isModifyingQuery()) {
+		JpaQueryExecution execution = this.execution.getNullable();
+
+		if (execution != null) {
+			return execution;
+		}
+
+		if (method.isModifyingQuery()) {
 			return new ModifyingExecution(method, em);
 		} else {
 			return new SingleEntityExecution();
@@ -168,8 +180,12 @@ public abstract class AbstractJpaQuery implements RepositoryQuery {
 	 */
 	protected <T extends Query> T applyHints(T query, JpaQueryMethod method) {
 
-		for (QueryHint hint : method.getHints()) {
-			applyQueryHint(query, hint);
+		List<QueryHint> hints = method.getHints();
+
+		if (!hints.isEmpty()) {
+			for (QueryHint hint : hints) {
+				applyQueryHint(query, hint);
+			}
 		}
 
 		return query;
@@ -206,8 +222,8 @@ public abstract class AbstractJpaQuery implements RepositoryQuery {
 		return ParameterBinderFactory.createBinder(getQueryMethod().getParameters());
 	}
 
-	protected Query createQuery(Object[] values) {
-		return applyLockMode(applyEntityGraphConfiguration(applyHints(doCreateQuery(values), method), method), method);
+	protected Query createQuery(JpaParametersParameterAccessor parameters) {
+		return applyLockMode(applyEntityGraphConfiguration(applyHints(doCreateQuery(parameters), method), method), method);
 	}
 
 	/**
@@ -220,56 +236,58 @@ public abstract class AbstractJpaQuery implements RepositoryQuery {
 	 */
 	private Query applyEntityGraphConfiguration(Query query, JpaQueryMethod method) {
 
-		Assert.notNull(query, "Query must not be null!");
-		Assert.notNull(method, "JpaQueryMethod must not be null!");
+		JpaEntityGraph entityGraph = method.getEntityGraph();
 
-		Map<String, Object> hints = Jpa21Utils.tryGetFetchGraphHints(em, method.getEntityGraph(),
-				getQueryMethod().getEntityInformation().getJavaType());
+		if (entityGraph != null) {
+			Map<String, Object> hints = Jpa21Utils.tryGetFetchGraphHints(em, method.getEntityGraph(),
+					getQueryMethod().getEntityInformation().getJavaType());
 
-		for (Map.Entry<String, Object> hint : hints.entrySet()) {
-			query.setHint(hint.getKey(), hint.getValue());
+			for (Map.Entry<String, Object> hint : hints.entrySet()) {
+				query.setHint(hint.getKey(), hint.getValue());
+			}
 		}
 
 		return query;
 	}
 
-	protected Query createCountQuery(Object[] values) {
+	protected Query createCountQuery(JpaParametersParameterAccessor values) {
 		Query countQuery = doCreateCountQuery(values);
 		return method.applyHintsToCountQuery() ? applyHints(countQuery, method) : countQuery;
 	}
 
 	/**
 	 * Returns the type to be used when creating the JPA query.
-	 * 
+	 *
 	 * @return
 	 * @since 2.0.5
 	 */
-	protected Optional<Class<?>> getTypeToRead(ReturnedType returnedType) {
+	@Nullable
+	protected Class<?> getTypeToRead(ReturnedType returnedType) {
 
 		if (PersistenceProvider.ECLIPSELINK.equals(provider)) {
-			return Optional.empty();
+			return null;
 		}
 
-		return returnedType.isProjecting() && !getMetamodel().isJpaManaged(returnedType.getReturnedType())
-				? Optional.of(Tuple.class)
-				: Optional.empty();
+		return returnedType.isProjecting() && !getMetamodel().isJpaManaged(returnedType.getReturnedType()) //
+				? Tuple.class //
+				: null;
 	}
 
 	/**
 	 * Creates a {@link Query} instance for the given values.
 	 *
-	 * @param values must not be {@literal null}.
+	 * @param accessor must not be {@literal null}.
 	 * @return
 	 */
-	protected abstract Query doCreateQuery(Object[] values);
+	protected abstract Query doCreateQuery(JpaParametersParameterAccessor accessor);
 
 	/**
 	 * Creates a {@link TypedQuery} for counting using the given values.
 	 *
-	 * @param values must not be {@literal null}.
+	 * @param accessor must not be {@literal null}.
 	 * @return
 	 */
-	protected abstract Query doCreateCountQuery(Object[] values);
+	protected abstract Query doCreateCountQuery(JpaParametersParameterAccessor accessor);
 
 	static class TupleConverter implements Converter<Object, Object> {
 

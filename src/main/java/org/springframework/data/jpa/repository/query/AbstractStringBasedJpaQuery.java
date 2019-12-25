@@ -15,13 +15,9 @@
  */
 package org.springframework.data.jpa.repository.query;
 
-import static org.springframework.data.jpa.repository.query.QueryParameterSetter.ErrorHandling.*;
-
 import javax.persistence.EntityManager;
 import javax.persistence.Query;
 
-import org.springframework.data.repository.query.ParameterAccessor;
-import org.springframework.data.repository.query.ParametersParameterAccessor;
 import org.springframework.data.repository.query.QueryMethodEvaluationContextProvider;
 import org.springframework.data.repository.query.ResultProcessor;
 import org.springframework.data.repository.query.ReturnedType;
@@ -36,6 +32,7 @@ import org.springframework.util.Assert;
  * @author Jens Schauder
  * @author Tom Hombergs
  * @author David Madden
+ * @author Mark Paluch
  * @author Chao Jiang
  */
 abstract class AbstractStringBasedJpaQuery extends AbstractJpaQuery {
@@ -44,6 +41,7 @@ abstract class AbstractStringBasedJpaQuery extends AbstractJpaQuery {
 	private final DeclaredQuery countQuery;
 	private final QueryMethodEvaluationContextProvider evaluationContextProvider;
 	private final SpelExpressionParser parser;
+	private final QueryParameterSetter.QueryMetadataCache metadataCache = new QueryParameterSetter.QueryMetadataCache();
 
 	/**
 	 * Creates a new {@link AbstractStringBasedJpaQuery} from the given {@link JpaQueryMethod}, {@link EntityManager} and
@@ -65,7 +63,7 @@ abstract class AbstractStringBasedJpaQuery extends AbstractJpaQuery {
 		Assert.notNull(parser, "Parser must not be null!");
 
 		this.evaluationContextProvider = evaluationContextProvider;
-		this.query = new ExpressionBasedStringQuery(queryString, method.getEntityInformation(), parser, method.isNativeQuery());
+		this.query = new ExpressionBasedStringQuery(queryString, method.getEntityInformation(), parser);
 
 		DeclaredQuery countQuery = query.deriveCountQuery(method.getCountQuery(), method.getCountQueryProjection());
 		this.countQuery = ExpressionBasedStringQuery.from(countQuery, method.getEntityInformation(), parser);
@@ -78,25 +76,26 @@ abstract class AbstractStringBasedJpaQuery extends AbstractJpaQuery {
 
 	/*
 	 * (non-Javadoc)
-	 * @see org.springframework.data.jpa.repository.query.AbstractJpaQuery#doCreateQuery(java.lang.Object[])
+	 * @see org.springframework.data.jpa.repository.query.AbstractJpaQuery#doCreateQuery(JpaParametersParameterAccessor)
 	 */
 	@Override
-	public Query doCreateQuery(Object[] values) {
+	public Query doCreateQuery(JpaParametersParameterAccessor accessor) {
 
-		ParameterAccessor accessor = new ParametersParameterAccessor(getQueryMethod().getParameters(), values);
 		String sortedQueryString = QueryUtils.applySorting(query.getQueryString(), accessor.getSort(), query.getAlias());
 		ResultProcessor processor = getQueryMethod().getResultProcessor().withDynamicProjection(accessor);
 
 		Query query = createJpaQuery(sortedQueryString, processor.getReturnedType());
 
+		QueryParameterSetter.QueryMetadata metadata = metadataCache.getMetadata(sortedQueryString, query);
+
 		// it is ok to reuse the binding contained in the ParameterBinder although we create a new query String because the
 		// parameters in the query do not change.
-		return parameterBinder.get().bindAndPrepare(query, values);
+		return parameterBinder.get().bindAndPrepare(query, metadata, accessor);
 	}
 
 	/*
 	 * (non-Javadoc)
-	 * @see org.springframework.data.jpa.repository.query.AbstractJpaQuery#createBinder(java.lang.Object[])
+	 * @see org.springframework.data.jpa.repository.query.AbstractJpaQuery#createBinder(JpaParametersParameterAccessor)
 	 */
 	@Override
 	protected ParameterBinder createBinder() {
@@ -107,10 +106,10 @@ abstract class AbstractStringBasedJpaQuery extends AbstractJpaQuery {
 
 	/*
 	 * (non-Javadoc)
-	 * @see org.springframework.data.jpa.repository.query.AbstractJpaQuery#doCreateCountQuery(java.lang.Object[])
+	 * @see org.springframework.data.jpa.repository.query.AbstractJpaQuery#doCreateCountQuery(JpaParametersParameterAccessor)
 	 */
 	@Override
-	protected Query doCreateCountQuery(Object[] values) {
+	protected Query doCreateCountQuery(JpaParametersParameterAccessor accessor) {
 
 		String queryString = countQuery.getQueryString();
 		EntityManager em = getEntityManager();
@@ -119,7 +118,11 @@ abstract class AbstractStringBasedJpaQuery extends AbstractJpaQuery {
 				? em.createNativeQuery(queryString) //
 				: em.createQuery(queryString, Long.class);
 
-		return parameterBinder.get().bind(query, values, LENIENT);
+		QueryParameterSetter.QueryMetadata metadata = metadataCache.getMetadata(queryString, query);
+
+		parameterBinder.get().bind(metadata.withQuery(query), accessor, QueryParameterSetter.ErrorHandling.LENIENT);
+
+		return query;
 	}
 
 	/**
@@ -148,8 +151,10 @@ abstract class AbstractStringBasedJpaQuery extends AbstractJpaQuery {
 			return em.createQuery(queryString);
 		}
 
-		return getTypeToRead(returnedType) //
-				.<Query> map(it -> em.createQuery(queryString, it)) //
-				.orElseGet(() -> em.createQuery(queryString));
+		Class<?> typeToRead = getTypeToRead(returnedType);
+
+		return typeToRead == null //
+				? em.createQuery(queryString) //
+				: em.createQuery(queryString, typeToRead);
 	}
 }

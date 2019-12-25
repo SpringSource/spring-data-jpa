@@ -35,20 +35,22 @@ import javax.persistence.TemporalType;
 import javax.persistence.criteria.ParameterExpression;
 
 import org.assertj.core.api.SoftAssertions;
+import org.junit.Before;
 import org.junit.Test;
 import org.springframework.data.jpa.repository.query.QueryParameterSetter.NamedOrIndexedQueryParameterSetter;
 
 /**
  * Unit tests fir {@link NamedOrIndexedQueryParameterSetter}.
- * 
+ *
  * @author Jens Schauder
  * @author Oliver Gierke
+ * @author Mark Paluch
  */
 public class NamedOrIndexedQueryParameterSetterUnitTests {
 
 	static final String EXCEPTION_MESSAGE = "mock exception";
-	Function<Object[], Object> firstValueExtractor = args -> args[0];
-	Object[] methodArguments = { new Date() };
+	Function<JpaParametersParameterAccessor, Object> firstValueExtractor = args -> args.getValues()[0];
+	JpaParametersParameterAccessor methodArguments;
 
 	List<TemporalType> temporalTypes = asList(null, TIME);
 	List<Parameter<?>> parameters = Arrays.<Parameter<?>> asList( //
@@ -58,6 +60,15 @@ public class NamedOrIndexedQueryParameterSetterUnitTests {
 	);
 
 	SoftAssertions softly = new SoftAssertions();
+
+	@Before
+	public void before() {
+
+		JpaParametersParameterAccessor accessor = mock(JpaParametersParameterAccessor.class);
+		when(accessor.getValues()).thenReturn(new Object[] { new Date() });
+
+		this.methodArguments = accessor;
+	}
 
 	@Test // DATAJPA-1233
 	public void strictErrorHandlingThrowsExceptionForAllVariationsOfParameters() {
@@ -73,7 +84,9 @@ public class NamedOrIndexedQueryParameterSetterUnitTests {
 						temporalType //
 				);
 
-				softly.assertThatThrownBy(() -> setter.setParameter(query, methodArguments, STRICT)) //
+				softly
+						.assertThatThrownBy(
+								() -> setter.setParameter(QueryParameterSetter.BindableQuery.from(query), methodArguments, STRICT)) //
 						.describedAs("p-type: %s, p-name: %s, p-position: %s, temporal: %s", //
 								parameter.getClass(), //
 								parameter.getName(), //
@@ -100,7 +113,9 @@ public class NamedOrIndexedQueryParameterSetterUnitTests {
 						temporalType //
 				);
 
-				softly.assertThatCode(() -> setter.setParameter(query, methodArguments, LENIENT)) //
+				softly
+						.assertThatCode(
+								() -> setter.setParameter(QueryParameterSetter.BindableQuery.from(query), methodArguments, LENIENT)) //
 						.describedAs("p-type: %s, p-name: %s, p-position: %s, temporal: %s", //
 								parameter.getClass(), //
 								parameter.getName(), //
@@ -131,7 +146,7 @@ public class NamedOrIndexedQueryParameterSetterUnitTests {
 					temporalType //
 			);
 
-			setter.setParameter(query, methodArguments, LENIENT);
+			setter.setParameter(QueryParameterSetter.BindableQuery.from(query), methodArguments, LENIENT);
 
 			if (temporalType == null) {
 				verify(query).setParameter(eq(11), any(Date.class));
@@ -161,7 +176,7 @@ public class NamedOrIndexedQueryParameterSetterUnitTests {
 					temporalType //
 			);
 
-			setter.setParameter(query, methodArguments, LENIENT);
+			setter.setParameter(QueryParameterSetter.BindableQuery.from(query), methodArguments, LENIENT);
 
 			if (temporalType == null) {
 				verify(query, never()).setParameter(anyInt(), any(Date.class));

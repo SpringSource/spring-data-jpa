@@ -17,8 +17,6 @@ package org.springframework.data.jpa.repository.query;
 
 import static org.springframework.data.jpa.repository.query.QueryParameterSetter.ErrorHandling.*;
 
-import java.util.Optional;
-
 import javax.persistence.EntityManager;
 import javax.persistence.Query;
 import javax.persistence.Tuple;
@@ -26,9 +24,9 @@ import javax.persistence.TypedQuery;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 import org.springframework.data.jpa.provider.QueryExtractor;
 import org.springframework.data.repository.query.Parameters;
-import org.springframework.data.repository.query.ParametersParameterAccessor;
 import org.springframework.data.repository.query.QueryCreationException;
 import org.springframework.data.repository.query.RepositoryQuery;
 import org.springframework.data.repository.query.ResultProcessor;
@@ -58,6 +56,7 @@ final class NamedQuery extends AbstractJpaQuery {
 	private final QueryExtractor extractor;
 	private final boolean namedCountQueryIsPresent;
 	private final DeclaredQuery declaredQuery;
+	private final QueryParameterSetter.QueryMetadataCache metadataCache;
 
 	/**
 	 * Creates a new {@link NamedQuery}.
@@ -96,6 +95,8 @@ final class NamedQuery extends AbstractJpaQuery {
 			LOG.warn("Finder method {} is backed by a NamedQuery" + " but contains a Pageable parameter! Sorting delivered "
 					+ "via this Pageable will not be applied!", method);
 		}
+
+		this.metadataCache = new QueryParameterSetter.QueryMetadataCache();
 	}
 
 	/**
@@ -153,54 +154,60 @@ final class NamedQuery extends AbstractJpaQuery {
 
 	/*
 	 * (non-Javadoc)
-	 * @see org.springframework.data.jpa.repository.query.AbstractJpaQuery#doCreateQuery(java.lang.Object[])
+	 * @see org.springframework.data.jpa.repository.query.AbstractJpaQuery#doCreateQuery(JpaParametersParameterAccessor)
 	 */
 	@Override
-	protected Query doCreateQuery(Object[] values) {
+	protected Query doCreateQuery(JpaParametersParameterAccessor accessor) {
 
 		EntityManager em = getEntityManager();
 
 		JpaQueryMethod queryMethod = getQueryMethod();
-		ResultProcessor processor = queryMethod.getResultProcessor()
-				.withDynamicProjection(new ParametersParameterAccessor(queryMethod.getParameters(), values));
+		ResultProcessor processor = queryMethod.getResultProcessor().withDynamicProjection(accessor);
 
-		Query query = getTypeToRead(processor.getReturnedType()) //
-				.<Query> map(it -> em.createNamedQuery(queryName, it)) //
-				.orElseGet(() -> em.createNamedQuery(queryName));
+		Class<?> typeToRead = getTypeToRead(processor.getReturnedType());
 
-		return parameterBinder.get().bindAndPrepare(query, values);
+		Query query = typeToRead == null //
+				? em.createNamedQuery(queryName) //
+				: em.createNamedQuery(queryName, typeToRead);
+
+		QueryParameterSetter.QueryMetadata metadata = metadataCache.getMetadata(queryName, query);
+
+		return parameterBinder.get().bindAndPrepare(query, metadata, accessor);
 	}
 
 	/*
 	 * (non-Javadoc)
-	 * @see org.springframework.data.jpa.repository.query.AbstractJpaQuery#doCreateCountQuery(java.lang.Object[])
+	 * @see org.springframework.data.jpa.repository.query.AbstractJpaQuery#doCreateCountQuery(JpaParametersParameterAccessor)
 	 */
 	@Override
-	protected TypedQuery<Long> doCreateCountQuery(Object[] values) {
+	protected TypedQuery<Long> doCreateCountQuery(JpaParametersParameterAccessor accessor) {
 
 		EntityManager em = getEntityManager();
 		TypedQuery<Long> countQuery;
 
+		String cacheKey;
 		if (namedCountQueryIsPresent) {
-
+			cacheKey = countQueryName;
 			countQuery = em.createNamedQuery(countQueryName, Long.class);
 
 		} else {
 
 			String countQueryString = declaredQuery.deriveCountQuery(null, countProjection).getQueryString();
-
+			cacheKey = countQueryString;
 			countQuery = em.createQuery(countQueryString, Long.class);
 		}
 
-		return parameterBinder.get().bind(countQuery, values, LENIENT);
+		QueryParameterSetter.QueryMetadata metadata = metadataCache.getMetadata(cacheKey, countQuery);
+
+		return parameterBinder.get().bind(countQuery, metadata, accessor);
 	}
 
-	/* 
+	/*
 	 * (non-Javadoc)
 	 * @see org.springframework.data.jpa.repository.query.AbstractJpaQuery#getTypeToRead()
 	 */
 	@Override
-	protected Optional<Class<?>> getTypeToRead(ReturnedType returnedType) {
+	protected Class<?> getTypeToRead(ReturnedType returnedType) {
 
 		if (getQueryMethod().isNativeQuery()) {
 
@@ -209,20 +216,20 @@ final class NamedQuery extends AbstractJpaQuery {
 
 			// Domain or subtype -> use return type
 			if (domainType.isAssignableFrom(type)) {
-				return Optional.of(type);
+				return type;
 			}
 
 			// Domain type supertype -> use domain type
 			if (type.isAssignableFrom(domainType)) {
-				return Optional.of(domainType);
+				return domainType;
 			}
 
 			// Tuples for projection interfaces or explicit SQL mappings for everything else
-			return type.isInterface() ? Optional.of(Tuple.class) : Optional.empty();
+			return type.isInterface() ? Tuple.class : null;
 		}
 
 		return declaredQuery.hasConstructorExpression() //
-				? Optional.empty() //
+				? null //
 				: super.getTypeToRead(returnedType);
 	}
 }

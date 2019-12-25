@@ -106,8 +106,8 @@ abstract class QueryParameterSetterFactory {
 	 * @param binding the binding of the query parameter to be set.
 	 * @param parameter the method parameter to bind.
 	 */
-	private static QueryParameterSetter createSetter(Function<Object[], Object> valueExtractor, ParameterBinding binding,
-			@Nullable JpaParameter parameter) {
+	private static QueryParameterSetter createSetter(Function<JpaParametersParameterAccessor, Object> valueExtractor,
+			ParameterBinding binding, @Nullable JpaParameter parameter) {
 
 		TemporalType temporalType = parameter != null && parameter.isTemporalParameter() //
 				? parameter.getRequiredTemporalType() //
@@ -172,9 +172,9 @@ abstract class QueryParameterSetterFactory {
 		 * @return the result of the evaluation.
 		 */
 		@Nullable
-		private Object evaluateExpression(Expression expression, Object[] values) {
+		private Object evaluateExpression(Expression expression, JpaParametersParameterAccessor accessor) {
 
-			EvaluationContext context = evaluationContextProvider.getEvaluationContext(parameters, values);
+			EvaluationContext context = evaluationContextProvider.getEvaluationContext(parameters, accessor.getValues());
 
 			return expression.getValue(context, Object.class);
 		}
@@ -239,13 +239,19 @@ abstract class QueryParameterSetterFactory {
 		@Nullable
 		private JpaParameter findParameterForBinding(ParameterBinding binding) {
 
-			return parameters.getBindableParameters().stream() //
-					.filter(candidate -> binding.getRequiredName().equals(getName(candidate))) //
-					.findFirst().orElse(null);
+			JpaParameters bindableParameters = parameters.getBindableParameters();
+
+			for (JpaParameter bindableParameter : bindableParameters) {
+				if (binding.getRequiredName().equals(getName(bindableParameter))) {
+					return bindableParameter;
+				}
+			}
+
+			return null;
 		}
 
-		private Object getValue(Object[] values, Parameter parameter) {
-			return new JpaParametersParameterAccessor(parameters, values).getValue(parameter);
+		private Object getValue(JpaParametersParameterAccessor accessor, Parameter parameter) {
+			return accessor.getValue(parameter);
 		}
 
 		private static String getName(JpaParameter p) {
@@ -306,15 +312,14 @@ abstract class QueryParameterSetterFactory {
 			JpaParameter parameter = parameters.getBindableParameter(parameterIndex);
 			TemporalType temporalType = parameter.isTemporalParameter() ? parameter.getRequiredTemporalType() : null;
 
-			return new NamedOrIndexedQueryParameterSetter(values -> getAndPrepare(parameter, metadata, values),
-					metadata.getExpression(), temporalType);
+			return new NamedOrIndexedQueryParameterSetter(values -> {
+				return getAndPrepare(parameter, metadata, values);
+			}, metadata.getExpression(), temporalType);
 		}
 
 		@Nullable
-		private Object getAndPrepare(JpaParameter parameter, ParameterMetadata<?> metadata, Object[] values) {
-
-			JpaParametersParameterAccessor accessor = new JpaParametersParameterAccessor(parameters, values);
-
+		private Object getAndPrepare(JpaParameter parameter, ParameterMetadata<?> metadata,
+				JpaParametersParameterAccessor accessor) {
 			return metadata.prepare(accessor.getValue(parameter));
 		}
 	}

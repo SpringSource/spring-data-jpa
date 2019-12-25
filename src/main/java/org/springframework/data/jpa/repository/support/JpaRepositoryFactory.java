@@ -20,7 +20,9 @@ import static org.springframework.data.querydsl.QuerydslUtils.*;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.Serializable;
+import java.lang.reflect.Method;
 import java.util.Optional;
+import java.util.stream.Stream;
 
 import javax.persistence.EntityManager;
 import javax.persistence.Tuple;
@@ -46,12 +48,14 @@ import org.springframework.data.repository.core.support.QueryCreationListener;
 import org.springframework.data.repository.core.support.RepositoryComposition;
 import org.springframework.data.repository.core.support.RepositoryFactorySupport;
 import org.springframework.data.repository.core.support.RepositoryFragment;
+import org.springframework.data.repository.core.support.SurroundingTransactionDetectorMethodInterceptor;
 import org.springframework.data.repository.query.QueryLookupStrategy;
 import org.springframework.data.repository.query.QueryLookupStrategy.Key;
 import org.springframework.data.repository.query.QueryMethodEvaluationContextProvider;
 import org.springframework.data.repository.query.ReturnedType;
 import org.springframework.lang.Nullable;
 import org.springframework.util.Assert;
+import org.springframework.util.ReflectionUtils;
 
 /**
  * JPA specific generic repository factory.
@@ -86,6 +90,12 @@ public class JpaRepositoryFactory extends RepositoryFactorySupport {
 		this.entityPathResolver = SimpleEntityPathResolver.INSTANCE;
 
 		addRepositoryProxyPostProcessor(crudMethodMetadataPostProcessor);
+		addRepositoryProxyPostProcessor((factory, repositoryInformation) -> {
+
+			if (hasMethodReturningStream(repositoryInformation.getRepositoryInterface())) {
+				factory.addAdvice(SurroundingTransactionDetectorMethodInterceptor.INSTANCE);
+			}
+		});
 
 		if (extractor.equals(PersistenceProvider.ECLIPSELINK)) {
 			addQueryCreationListener(new EclipseLinkProjectionQueryCreationListener(entityManager));
@@ -105,7 +115,7 @@ public class JpaRepositoryFactory extends RepositoryFactorySupport {
 
 	/**
 	 * Configures the {@link EntityPathResolver} to be used. Defaults to {@link SimpleEntityPathResolver#INSTANCE}.
-	 * 
+	 *
 	 * @param entityPathResolver must not be {@literal null}.
 	 */
 	public void setEntityPathResolver(EntityPathResolver entityPathResolver) {
@@ -231,6 +241,19 @@ public class JpaRepositoryFactory extends RepositoryFactorySupport {
 		return fragments;
 	}
 
+	private static boolean hasMethodReturningStream(Class<?> repositoryClass) {
+
+		Method[] methods = ReflectionUtils.getAllDeclaredMethods(repositoryClass);
+
+		for (Method method : methods) {
+			if (Stream.class.isAssignableFrom(method.getReturnType())) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
 	/**
 	 * Query creation listener that informs EclipseLink users that they have to be extra careful when defining repository
 	 * query methods using projections as we have to rely on the declaration order of the accessors in projection
@@ -252,7 +275,7 @@ public class JpaRepositoryFactory extends RepositoryFactorySupport {
 
 		/**
 		 * Creates a new {@link EclipseLinkProjectionQueryCreationListener} for the given {@link EntityManager}.
-		 * 
+		 *
 		 * @param em must not be {@literal null}.
 		 */
 		public EclipseLinkProjectionQueryCreationListener(EntityManager em) {
@@ -262,7 +285,7 @@ public class JpaRepositoryFactory extends RepositoryFactorySupport {
 			this.metamodel = JpaMetamodel.of(em.getMetamodel());
 		}
 
-		/* 
+		/*
 		 * (non-Javadoc)
 		 * @see org.springframework.data.repository.core.support.QueryCreationListener#onCreation(org.springframework.data.repository.query.RepositoryQuery)
 		 */

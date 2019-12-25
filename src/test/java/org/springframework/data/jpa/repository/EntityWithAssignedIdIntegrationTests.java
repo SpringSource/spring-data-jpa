@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2019 the original author or authors.
+ * Copyright 2019 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,31 +20,29 @@ import static org.assertj.core.api.Assertions.*;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.data.jpa.domain.sample.CustomAbstractPersistable;
-import org.springframework.data.jpa.repository.sample.CustomAbstractPersistableRepository;
+import org.springframework.data.jpa.domain.sample.EntityWithAssignedId;
+import org.springframework.data.jpa.repository.sample.EntityWithAssignedIdRepository;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * @author Thomas Darimont
- * @author Oliver Gierke
- * @author Jens Schauder
+ * @author Oliver Drotbohm
  */
-@Transactional
 @RunWith(SpringJUnit4ClassRunner.class)
-@ContextConfiguration(locations = { "classpath:config/namespace-autoconfig-context.xml" })
-public class CustomAbstractPersistableIntegrationTests {
+@ContextConfiguration("classpath:config/namespace-application-context.xml")
+@Transactional
+public class EntityWithAssignedIdIntegrationTests {
 
-	@Autowired CustomAbstractPersistableRepository repository;
+	@Autowired EntityWithAssignedIdRepository repository;
 
-	@Test // DATAJPA-622
-	public void shouldBeAbleToSaveAndLoadCustomPersistableWithUuidId() {
+	@Test // DATAJPA-1535
+	public void deletesEntityJustCreated() {
 
-		CustomAbstractPersistable entity = new CustomAbstractPersistable();
-		CustomAbstractPersistable saved = repository.save(entity);
-		CustomAbstractPersistable found = repository.findById(saved.getId()).get();
+		EntityWithAssignedId entityWithAssignedId = repository.save(new EntityWithAssignedId());
 
-		assertThat(found).isEqualTo(saved);
+		repository.deleteById(entityWithAssignedId.getId());
+
+		assertThat(repository.existsById(entityWithAssignedId.getId())).isFalse();
 	}
 }

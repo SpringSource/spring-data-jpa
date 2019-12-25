@@ -40,7 +40,6 @@ import org.springframework.data.jpa.repository.query.EscapeCharacter;
 import org.springframework.data.support.ExampleMatcherAccessor;
 import org.springframework.data.util.DirectFieldAccessFallbackBeanWrapper;
 import org.springframework.lang.Nullable;
-import org.springframework.orm.jpa.JpaSystemException;
 import org.springframework.util.Assert;
 import org.springframework.util.ClassUtils;
 import org.springframework.util.ObjectUtils;
@@ -92,7 +91,7 @@ public class QueryByExamplePredicateBuilder {
 	 * @return never {@literal null}.
 	 */
 	public static <T> Predicate getPredicate(Root<T> root, CriteriaBuilder cb, Example<T> example,
-											 EscapeCharacter escapeCharacter) {
+			EscapeCharacter escapeCharacter) {
 
 		Assert.notNull(root, "Root must not be null!");
 		Assert.notNull(cb, "CriteriaBuilder must not be null!");
@@ -147,7 +146,8 @@ public class QueryByExamplePredicateBuilder {
 
 			Object attributeValue = optionalValue.get();
 
-			if (attribute.getPersistentAttributeType().equals(PersistentAttributeType.EMBEDDED)) {
+			if (attribute.getPersistentAttributeType().equals(PersistentAttributeType.EMBEDDED)
+					|| (isAssociation(attribute) && !(from instanceof From))) {
 
 				predicates
 						.addAll(getPredicates(currentPath, cb, from.get(attribute.getName()), (ManagedType<?>) attribute.getType(),
@@ -156,11 +156,6 @@ public class QueryByExamplePredicateBuilder {
 			}
 
 			if (isAssociation(attribute)) {
-
-				if (!(from instanceof From)) {
-					throw new JpaSystemException(new IllegalArgumentException(String
-							.format("Unexpected path type for %s. Found %s where From.class was expected.", currentPath, from)));
-				}
 
 				PathNode node = currentNode.add(attribute.getName(), attributeValue);
 				if (node.spansCycle()) {
