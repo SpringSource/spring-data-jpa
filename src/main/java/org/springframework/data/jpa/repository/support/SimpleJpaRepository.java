@@ -17,6 +17,7 @@ package org.springframework.data.jpa.repository.support;
 
 import static org.springframework.data.jpa.repository.query.QueryUtils.*;
 
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -30,6 +31,7 @@ import javax.persistence.LockModeType;
 import javax.persistence.NoResultException;
 import javax.persistence.Parameter;
 import javax.persistence.Query;
+import javax.persistence.Tuple;
 import javax.persistence.TypedQuery;
 import javax.persistence.criteria.CriteriaBuilder;
 import javax.persistence.criteria.CriteriaQuery;
@@ -38,6 +40,7 @@ import javax.persistence.criteria.ParameterExpression;
 import javax.persistence.criteria.Path;
 import javax.persistence.criteria.Predicate;
 import javax.persistence.criteria.Root;
+import javax.persistence.criteria.Selection;
 
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.data.domain.Example;
@@ -52,12 +55,23 @@ import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.query.EscapeCharacter;
 import org.springframework.data.jpa.repository.query.QueryUtils;
 import org.springframework.data.jpa.repository.support.QueryHints.NoHints;
+import org.springframework.data.jpa.util.TupleConverter;
+import org.springframework.data.mapping.PropertyPath;
+import org.springframework.data.projection.ProjectionFactory;
+import org.springframework.data.repository.core.RepositoryInformation;
+import org.springframework.data.repository.query.ParameterAccessor;
+import org.springframework.data.repository.query.ParametersParameterAccessor;
+import org.springframework.data.repository.query.QueryMethod;
+import org.springframework.data.repository.query.ResultProcessor;
+import org.springframework.data.repository.query.ReturnedType;
 import org.springframework.data.repository.support.PageableExecutionUtils;
+import org.springframework.data.util.Pair;
 import org.springframework.data.util.ProxyUtils;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.Assert;
+import org.springframework.util.ConcurrentReferenceHashMap;
 
 /**
  * Default implementation of the {@link org.springframework.data.repository.CrudRepository} interface. This will offer
@@ -72,6 +86,7 @@ import org.springframework.util.Assert;
  * @author Jens Schauder
  * @author David Madden
  * @author Moritz Becker
+ * @author Lorenzo Dee
  * @param <T> the type of the entity to handle
  * @param <ID> the type of the entity's identifier
  */
@@ -87,6 +102,13 @@ public class SimpleJpaRepository<T, ID> implements JpaRepositoryImplementation<T
 
 	private @Nullable CrudMethodMetadata metadata;
 	private EscapeCharacter escapeCharacter = EscapeCharacter.DEFAULT;
+
+	private @Nullable ProjectionFactory projectionFactory;
+	private @Nullable RepositoryInformation information;
+
+	private final Map<Method, QueryMethod> queriesCache = new ConcurrentReferenceHashMap<>(8);
+	private final Map<Pair<Method, Class<?>>, ParameterAccessor> accessorsCache = new ConcurrentReferenceHashMap<>(32);
+	private final Map<Pair<Method, Class<?>>, ResultProcessor> resultProcessorsCache = new ConcurrentReferenceHashMap<>(32);
 
 	private static <T> Collection<T> toCollection(Iterable<T> ts) {
 
@@ -141,6 +163,16 @@ public class SimpleJpaRepository<T, ID> implements JpaRepositoryImplementation<T
 	@Override
 	public void setEscapeCharacter(EscapeCharacter escapeCharacter) {
 		this.escapeCharacter = escapeCharacter;
+	}
+	
+	@Override
+	public void setProjectionFactory(ProjectionFactory projectionFactory) {
+		this.projectionFactory = projectionFactory;
+	}
+
+	@Override
+	public void setRepositoryInformation(RepositoryInformation information) {
+		this.information = information;
 	}
 
 	@Nullable
@@ -426,11 +458,36 @@ public class SimpleJpaRepository<T, ID> implements JpaRepositoryImplementation<T
 
 	/*
 	 * (non-Javadoc)
+	 * @see org.springframework.data.jpa.repository.JpaSpecificationExecutor#findOne(org.springframework.data.jpa.domain.Specification, java.lang.Class)
+	 */
+	@Override
+	public <P> Optional<P> findOne(@Nullable Specification<T> spec, Class<P> projectionType) {
+		try {
+			ResultProcessor resultProcessor = getResultProcessor(projectionType);
+			Tuple result = getTupleQuery(
+					spec, getDomainClass(), Sort.unsorted(), resultProcessor.getReturnedType()).getSingleResult();
+			return Optional.of(resultProcessor.processResult(result, new TupleConverter(projectionType)));
+		} catch (NoResultException e) {
+			return Optional.empty();
+		}
+	}
+	
+	/*
+	 * (non-Javadoc)
 	 * @see org.springframework.data.jpa.repository.JpaSpecificationExecutor#findAll(org.springframework.data.jpa.domain.Specification)
 	 */
 	@Override
 	public List<T> findAll(@Nullable Specification<T> spec) {
 		return getQuery(spec, Sort.unsorted()).getResultList();
+	}
+
+	/*
+	 * (non-Javadoc)
+	 * @see org.springframework.data.jpa.repository.JpaSpecificationExecutor#findAll(org.springframework.data.jpa.domain.Specification, java.lang.Class)
+	 */
+	@Override
+	public <P> List<P> findAll(@Nullable Specification<T> spec, Class<P> projectionType) {
+		return findAll(spec, Sort.unsorted(), projectionType);
 	}
 
 	/*
@@ -447,11 +504,39 @@ public class SimpleJpaRepository<T, ID> implements JpaRepositoryImplementation<T
 
 	/*
 	 * (non-Javadoc)
+	 * @see org.springframework.data.jpa.repository.JpaSpecificationExecutor#findAll(org.springframework.data.jpa.domain.Specification, org.springframework.data.domain.Pageable, java.lang.Class)
+	 */
+	@Override
+	public <P> Page<P> findAll(@Nullable Specification<T> spec, Pageable pageable, Class<P> projectionType) {
+
+		Sort sort = pageable.isPaged() ? pageable.getSort() : Sort.unsorted();
+		ResultProcessor resultProcessor = getResultProcessor(projectionType);
+		TypedQuery<Tuple> query = getTupleQuery(
+				spec, getDomainClass(), sort, resultProcessor.getReturnedType());
+		return isUnpaged(pageable)
+				? new PageImpl<P>(resultProcessor.processResult(query.getResultList(), new TupleConverter(projectionType)))
+				: readPage(query, getDomainClass(), pageable, spec, projectionType);
+	}
+
+	/*
+	 * (non-Javadoc)
 	 * @see org.springframework.data.jpa.repository.JpaSpecificationExecutor#findAll(org.springframework.data.jpa.domain.Specification, org.springframework.data.domain.Sort)
 	 */
 	@Override
 	public List<T> findAll(@Nullable Specification<T> spec, Sort sort) {
 		return getQuery(spec, sort).getResultList();
+	}
+
+	/*
+	 * (non-Javadoc)
+	 * @see org.springframework.data.jpa.repository.JpaSpecificationExecutor#findAll(org.springframework.data.jpa.domain.Specification, org.springframework.data.domain.Sort, java.lang.Class)
+	 */
+	@Override
+	public <P> List<P> findAll(@Nullable Specification<T> spec, Sort sort, Class<P> projectionType) {
+		ResultProcessor resultProcessor = getResultProcessor(projectionType);
+		List<Tuple> resultList = getTupleQuery(
+				spec, getDomainClass(), sort, resultProcessor.getReturnedType()).getResultList();
+		return resultProcessor.processResult(resultList, new TupleConverter(projectionType));
 	}
 
 	/*
@@ -639,6 +724,31 @@ public class SimpleJpaRepository<T, ID> implements JpaRepositoryImplementation<T
 	}
 
 	/**
+	 * Reads the given {@link TypedQuery} into a {@link Page} applying the given {@link Pageable} and
+	 * {@link Specification} and projection.
+	 *
+	 * @param query must not be {@literal null}.
+	 * @param domainClass must not be {@literal null}.
+	 * @param spec can be {@literal null}.
+	 * @param pageable can be {@literal null}.
+	 * @param projectionType must not be {@literal null}.
+	 * @return
+	 */
+	protected <S extends T, P> Page<P> readPage(TypedQuery<Tuple> query, final Class<S> domainClass, Pageable pageable,
+			@Nullable Specification<S> spec, Class<P> projectionType) {
+
+		if (pageable.isPaged()) {
+			query.setFirstResult((int) pageable.getOffset());
+			query.setMaxResults(pageable.getPageSize());
+		}
+		ResultProcessor resultProcessor = getResultProcessor(projectionType);
+		Page<Tuple> tuplesPage = PageableExecutionUtils.getPage(
+				query.getResultList(), pageable, () -> executeCountQuery(getCountQuery(spec, domainClass)));
+		// Page<Tuple> --> Page<P>
+		return resultProcessor.processResult(tuplesPage, new TupleConverter(projectionType));
+	}
+
+	/**
 	 * Creates a new {@link TypedQuery} from the given {@link Specification}.
 	 *
 	 * @param spec can be {@literal null}.
@@ -692,6 +802,37 @@ public class SimpleJpaRepository<T, ID> implements JpaRepositoryImplementation<T
 
 		Root<S> root = applySpecificationToCriteria(spec, domainClass, query);
 		query.select(root);
+
+		if (sort.isSorted()) {
+			query.orderBy(toOrders(sort, root, builder));
+		}
+
+		return applyRepositoryMethodMetadata(em.createQuery(query));
+	}
+
+	/**
+	 * Creates a {@link TypedQuery} for the given {@link Specification}, {@link Sort}, and projection.
+	 *
+	 * @param spec can be {@literal null}.
+	 * @param domainClass must not be {@literal null}.
+	 * @param sort must not be {@literal null}.
+	 * @param returnedType must not be {@literal null}.
+	 * @return
+	 */
+	protected <S extends T> TypedQuery<Tuple> getTupleQuery(@Nullable Specification<S> spec, Class<S> domainClass, Sort sort, ReturnedType returnedType) {
+
+		CriteriaBuilder builder = em.getCriteriaBuilder();
+		CriteriaQuery<Tuple> query = builder.createTupleQuery();
+
+		Root<S> root = applySpecificationToCriteria(spec, domainClass, query);
+
+		List<String> properties = returnedType.getInputProperties();
+		List<Selection<?>> selections = new ArrayList<>(properties.size());
+		for (String property : properties) {
+			PropertyPath path = PropertyPath.from(property, returnedType.getReturnedType());
+			selections.add(toExpressionRecursively(root, path, true).alias(property));
+		}
+		query.multiselect(selections);
 
 		if (sort.isSorted()) {
 			query.orderBy(toOrders(sort, root, builder));
@@ -787,6 +928,27 @@ public class SimpleJpaRepository<T, ID> implements JpaRepositoryImplementation<T
 		for (Entry<String, Object> hint : getQueryHints().withFetchGraphs(em)) {
 			query.setHint(hint.getKey(), hint.getValue());
 		}
+	}
+
+	private <P> ResultProcessor getResultProcessor(Class<P> projectionType) {
+
+		Method method = metadata.getMethod();
+		QueryMethod queryMethod = queriesCache.computeIfAbsent(
+				method,
+				key -> new QueryMethod(method, information, projectionFactory));
+		int numberOfParameters = queryMethod.getParameters().getNumberOfParameters();
+		Object values[] = new Object[numberOfParameters];
+		ParameterAccessor accessor = accessorsCache.computeIfAbsent(
+				Pair.of(method, projectionType),
+				key -> new ParametersParameterAccessor(queryMethod.getParameters(), values) {
+						@Override
+						public Class<?> findDynamicProjection() {
+							return projectionType;
+						}
+				});
+		return resultProcessorsCache.computeIfAbsent(
+				Pair.of(method, projectionType),
+				key -> queryMethod.getResultProcessor().withDynamicProjection(accessor));
 	}
 
 	/**
