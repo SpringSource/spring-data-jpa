@@ -91,6 +91,7 @@ import com.google.common.base.Optional;
  * @author Kevin Peters
  * @author Jens Schauder
  * @author Andrey Kovalev
+ * @author Simon Paradies
  */
 @ExtendWith(SpringExtension.class)
 @ContextConfiguration("classpath:application-context.xml")
@@ -2137,6 +2138,16 @@ public class UserRepositoryTests {
 	@Test // DATAJPA-1233
 	void handlesCountQueriesWithLessParametersMoreThanOneIndexed() {
 		repository.findAllOrderedBySpecialNameMultipleParamsIndexed("Oliver", "x", PageRequest.of(2, 3));
+	}
+
+	@Test // DATAJPA-1750
+	public void correctlyBuildSortClauseWhenSortingByFunctionAliasAndFunctionContainsPositionalParameters() {
+		repository.findAllAndSortByFunctionResultPositionalParameter("prefix", "suffix", Sort.by("idWithPrefixAndSuffix"));
+	}
+
+	@Test // DATAJPA-1750
+	public void correctlyBuildSortClauseWhenSortingByFunctionAliasAndFunctionContainsNamedParameters() {
+		repository.findAllAndSortByFunctionResultNamedParameter("prefix", "suffix", Sort.by("idWithPrefixAndSuffix"));
 	}
 
 	// DATAJPA-928
