@@ -744,16 +744,7 @@ public class SimpleJpaRepository<T, ID> implements JpaRepositoryImplementation<T
 	 */
 	protected <S extends T> TypedQuery<S> getQuery(@Nullable Specification<S> spec, Class<S> domainClass, Sort sort) {
 
-		CriteriaBuilder builder = em.getCriteriaBuilder();
-		CriteriaQuery<S> query = builder.createQuery(domainClass);
-
-		Root<S> root = applySpecificationToCriteria(spec, domainClass, query);
-		query.select(root);
-
-		if (sort.isSorted()) {
-			query.orderBy(toOrders(sort, root, builder));
-		}
-
+		CriteriaQuery<S> query = buildCriteriaQuery(spec, domainClass, sort);
 		return applyRepositoryMethodMetadata(em.createQuery(query));
 	}
 
@@ -778,6 +769,43 @@ public class SimpleJpaRepository<T, ID> implements JpaRepositoryImplementation<T
 	 */
 	protected <S extends T> TypedQuery<Long> getCountQuery(@Nullable Specification<S> spec, Class<S> domainClass) {
 
+		CriteriaQuery<Long> query = buildCountCriteriaQuery(spec, domainClass);
+		return em.createQuery(query);
+	}
+
+	/**
+	 * Build the {@link CriteriaQuery} for the given {@link Specification} and {@link Sort}
+	 *
+	 * @param spec can be {@literal null}.
+	 * @param domainClass must not be {@literal null}.
+	 * @param sort must not be {@literal null}.
+	 * @return The {@link CriteriaQuery} build according to parameters.
+	 */
+	protected <S extends T> CriteriaQuery<S> buildCriteriaQuery(@Nullable Specification<S> spec, Class<S> domainClass,
+			Sort sort) {
+
+		CriteriaBuilder builder = em.getCriteriaBuilder();
+		CriteriaQuery<S> query = builder.createQuery(domainClass);
+
+		Root<S> root = applySpecificationToCriteria(spec, domainClass, query);
+		query.select(root);
+
+		if (sort.isSorted()) {
+			query.orderBy(toOrders(sort, root, builder));
+		}
+		return query;
+	}
+
+	/**
+	 * Creates a new count {@link CriteriaQuery} for the given {@link Specification}.
+	 *
+	 * @param spec can be {@literal null}.
+	 * @param domainClass must not be {@literal null}.
+	 * @return The {@link CriteriaQuery} built according to parameters.
+	 */
+	protected <S extends T> CriteriaQuery<Long> buildCountCriteriaQuery(@Nullable Specification<S> spec,
+			Class<S> domainClass) {
+
 		CriteriaBuilder builder = em.getCriteriaBuilder();
 		CriteriaQuery<Long> query = builder.createQuery(Long.class);
 
@@ -792,7 +820,7 @@ public class SimpleJpaRepository<T, ID> implements JpaRepositoryImplementation<T
 		// Remove all Orders the Specifications might have applied
 		query.orderBy(Collections.<Order> emptyList());
 
-		return em.createQuery(query);
+		return query;
 	}
 
 	/**
